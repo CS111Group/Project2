@@ -24,6 +24,13 @@ FORWARD _PROTOTYPE( void balance_queues, (struct timer *tp)		);
 
 #define DEFAULT_USER_TIME_SLICE 200
 
+#define DEBUG	/* use ifdef debug for any debugging printouts */
+
+unsigned max_tic;
+unsigned bcount = 0;  /* block counter */
+
+
+
 /*===========================================================================*
  *				do_noquantum				     *
  *===========================================================================*/
@@ -229,6 +236,7 @@ PUBLIC void init_scheduling(void)
 	balance_timeout = BALANCE_TIMEOUT * sys_hz();
 	init_timer(&sched_timer);
 	set_timer(&sched_timer, balance_timeout, balance_queues, 0);
+	max_tic = 0;
 }
 
 /*===========================================================================*
@@ -257,3 +265,52 @@ PRIVATE void balance_queues(struct timer *tp)
 
 	set_timer(&sched_timer, balance_timeout, balance_queues, 0);
 }
+
+/*===========================================================================*
+ *				lotto_range				     *
+ *===========================================================================*/
+PRIVATE int lotto_range()
+{
+	int max_num = 0;
+	struct schedproc *rmp;
+	int proc_nr;
+	int rv;
+	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++){
+		if(is_user_proc(rmp->priority) && (rmp->flags& IN_USE)){
+			max_num += rmp->num_tickets;
+		}
+	}
+	return (max_num - 1);  /* -1 to exclude 0 that is included in rand() */}
+}
+
+/*===========================================================================*
+ *				do_lotto				     *
+ *===========================================================================*/
+
+PRIVATE void play_lottery()
+{
+ 	struct schedproc *rmp;	/*process to be scheduled*/
+	int proc_nr;			/*process number*/
+	int rv;
+	int winner = 0;
+	int win_tic = 0;
+	int is_winner = 0;
+	int lotto_num;
+
+	srand(time(NULL));	/*ran once to initialize rand. */
+
+	lotto_num = rand() % lotto_range();
+
+	#ifdef DEBUG
+		printf("Lottery finished. Ticket drawn: %d\n", lotto_num);
+		printf("Loser processes: ");
+	#endif
+
+
+
+
+
+
+
+}
+
