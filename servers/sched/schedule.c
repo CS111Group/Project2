@@ -26,10 +26,39 @@ FORWARD _PROTOTYPE( void balance_queues, (struct timer *tp)		);
 
 #define DEBUG	/* use ifdef debug for any debugging printouts */
 
+/*#define DYNAMIC_PRIORITY*/
+/*#define MY_PRIORITY  */
+
 unsigned max_tic;
 unsigned bcount = 0;  /* block counter */
 
+PRIVATE int is_user_proc(int prio){
+	return (prio >= WIN_Q);
+}
 
+/*===========================================================================*
+ *				allot_tickets			     *
+ *              handles all ticket allocations, from dynamic to do_nice,
+ *              as well as decrementing tickets from do_noquantum.
+ *===========================================================================*/
+
+PRIVATE	int allot_tickets(struct schedproc * rmp, int tic_num){
+	int rv;
+	if(!is_user_proc(rmp->priority)) return -1;
+	
+	if((rmp->tic_num + tic_num >= rmp->max_tic)){
+		rmp->tic_num = rmp->max_tic;
+	}
+	else if(rmp->tic_num + tic_num <= 1){
+		rmp->tic_num = 1;
+	}
+	else{
+		rmp->tic_num += tic_num;
+	}
+	max_tic += rmp->tic_num;
+	rv = OK;
+	return rv;
+}
 
 /*===========================================================================*
  *				do_noquantum				     *
@@ -277,7 +306,7 @@ PRIVATE int lotto_range()
 	int rv;
 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++){
 		if(is_user_proc(rmp->priority) && (rmp->flags& IN_USE)){
-			max_num += rmp->num_tickets;
+			max_num += rmp->tic_num;
 		}
 	}
 	return (max_num - 1);  /* -1 to exclude 0 that is included in rand() */}
@@ -287,7 +316,7 @@ PRIVATE int lotto_range()
  *				do_lotto				     *
  *===========================================================================*/
 
-PRIVATE void play_lottery()
+PRIVATE void do_lotto(void)
 {
  	struct schedproc *rmp;	/*process to be scheduled*/
 	int proc_nr;			/*process number*/
@@ -306,11 +335,59 @@ PRIVATE void play_lottery()
 		printf("Loser processes: ");
 	#endif
 
-
-
-
-
-
-
+	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
+		
+			lotto_num -= rmp->tic_num;
+			if(is_user_proc(rmp->priority) && (rmp->flags& IN_USE)){
+				if(lotto_num <= 0 && !is_winner){
+					rmp->priority = WIN_Q;	/* we have a winner */
+					is_winner=1;
+					#ifdef DEBUG
+						winner = proc_nr;
+						win_tic = rmp->tic_num;
+						printf("proc_nr: %d rmp->prio: %d rmp->tic_num: %d, rmp->max_tic %d\n", 
+							proc_nr, rmp->priority, rmp->tic_num, rmp->max_tic);
+					#endif
+					
+				}
+				else{	
+					#ifdef DYNAMIC_PRIORITY
+					        /* 
+					         * The process was not chosen. Increase its
+					         * ticket count by one to incerase its priority
+					         * for next lottery.
+					         */
+						if(rmp->tic_num < rmp->max_tic){
+							allot_tickets(rmp, 1);
+						}
+					#endif
+					#ifdef MY_PRIORITY
+					        /* 
+					         * The process was not chosen. Double its
+					         * ticket count for fun!
+					         */
+						if(rmp->tic_num < rmp->max_tic){
+							allot_tickets(rmp, rmp->tic_num);
+						}
+					#endif
+					
+					rmp->priority = LOS_Q;
+					#ifdef DEBUG
+						/* Prints out the losers */
+						printf("%d[%d],   ", proc_nr, rmp->tic_num);
+					#endif
+				}
+			schedule_process(rmp);
+			}
+	}
+	#ifdef DEBUG
+		printf("\n**WINNER: %d[%d]**\n", winner, winner_tickets);
+	#endif
 }
+
+
+
+
+
+
 
