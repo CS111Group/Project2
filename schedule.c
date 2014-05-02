@@ -1,12 +1,3 @@
-/* This file contains the scheduling policy for SCHED
- *
- * The entry points are:
- *   do_noquantum:        Called on behalf of process' that run out of quantum
- *   do_start_scheduling  Request to start scheduling a proc
- *   do_stop_scheduling   Request to stop scheduling a proc
- *   do_nice		  Request to change the nice level on a proc
- *   init_scheduling      Called from main.c to set up/prepare scheduling
- */
 #include "sched.h"
 #include "schedproc.h"
 #include <assert.h>
@@ -17,13 +8,49 @@
 PRIVATE timer_t sched_timer;
 PRIVATE unsigned balance_timeout;
 
+/* CHANGE START */
+PRIVATE struct schedproc *temp;
+PRIVATE int nTickets = 0;
+/* CHANGE END */
+
 #define BALANCE_TIMEOUT	5 /* how often to balance queues in seconds */
 
-FORWARD _PROTOTYPE( int schedule_process, (struct schedproc * rmp)	);
-FORWARD _PROTOTYPE( void balance_queues, (struct timer *tp)		);
+FORWARD _PROTOTYPE(int schedule_process, (struct schedproc * rmp));
+FORWARD _PROTOTYPE(void balance_queues, (struct timer *tp));
 
 #define DEFAULT_USER_TIME_SLICE 200
 
+/*===========================================================================*
+ *				play_lottery				     *
+ *===========================================================================*/
+PRIVATE void play_lottery(void)
+{
+/* call this in balance_queues? */
+	struct schedproc *rmp;
+    int winning_ticket; 
+    int proc_nr;
+    int rv;
+    
+    /*printf("PLAYING LOTTERY.\n");*/
+    srandom(time(NULL));
+    winning_ticket = random()%nTickets;
+    /*printf("Playing lottery. winning_ticket: %d\n", winning_ticket);*/
+    for(proc_nr = 0, rmp = schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++){
+        if(rmp->flags & IN_USE) {
+            if((winning_ticket-=rmp->tickets) < 0){
+                schedule_process(rmp);
+                temp = rmp; 
+                /*printf("Temp priority: %d\n", temp->priority);*/
+            }
+        }
+    }
+    
+ /* 
+  * Randomly choose a number between 0 and nTickets-1 to "play" the lottery, resource 
+  * goes to whichever process "wins" the lottery
+  */
+}
+ 
 /*===========================================================================*
  *				do_noquantum				     *
  *===========================================================================*/
@@ -31,19 +58,41 @@ FORWARD _PROTOTYPE( void balance_queues, (struct timer *tp)		);
 PUBLIC int do_noquantum(message *m_ptr)
 {
 	register struct schedproc *rmp;
-	int rv, proc_nr_n;
-
+	int rv, winner,proc_nr_n;
+  int loop;
+    
 	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
 		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
 		m_ptr->m_source);
 		return EBADEPT;
 	}
-
+    
 	rmp = &schedproc[proc_nr_n];
-	if (rmp->priority < MIN_USER_Q) {
-		rmp->priority += 1; /* lower priority */
-	}
-
+	
+  /* CHANGE START */
+  if (rmp->priority == (MIN_USER_Q -1)){
+    /*for (loop = rmp->priority; loop < MIN_USER_Q; loop++){*/
+      printf("do_noquantum, lowering winner: priority %d\n", MIN_USER_Q);
+      rmp->priority += 1; /* lower priority */
+      if(rmp->tickets > 1){
+      	rmp->tickets -=1; /*decrease number of tickets*/
+      	printf("Winner used up quantum and ticket count decreased from %d to %d", rmp->tickets -1, rmp->tickets);
+      }
+    /*}*/
+    /* if (rmp->tickets >= 2) rmp->tickets -= 1; dynamic tickets*/
+  }else if (rmp->priority == MIN_USER_Q) {
+    printf("@@@@@ WE HAVE A BLOCKED WINNER: Loser priority %d, Blocked priority %d\n", rmp->priority, temp->priority);
+    temp->priority = MIN_USER_Q;
+    if(temp->tickets < 100){
+      temp->tickets += 1;
+      printf("Winner Blocks and ticket count increased from %d to %d", temp->tickets -1, temp->tickets);
+    }
+    if ((winner = sys_schedule(temp->endpoint, temp->priority,temp->time_slice)) != OK) {
+      printf("SCHED: An error occurred when trying to schedule %d: %d\n", temp->endpoint, winner);
+      }
+      printf("@@@@@Winner MOVED: Loser priority %d, new winner priority %d\n", rmp->priority, temp->priority);
+  }
+    
 	if ((rv = schedule_process(rmp)) != OK) {
 		return rv;
 	}
@@ -67,9 +116,11 @@ PUBLIC int do_stop_scheduling(message *m_ptr)
 		"%ld\n", m_ptr->SCHEDULING_ENDPOINT);
 		return EBADEPT;
 	}
-
 	rmp = &schedproc[proc_nr_n];
 	rmp->flags = 0; /*&= ~IN_USE;*/
+  nTickets -= rmp->tickets;
+
+  /*printf("do_stop_scheduling, total tickets : %d\n", nTickets);*/
 
 	return OK;
 }
@@ -109,10 +160,18 @@ PUBLIC int do_start_scheduling(message *m_ptr)
 
 	case SCHEDULING_START:
 		/* We have a special case here for system processes, for which
-		 * quanum and priority are set explicitly rather than inherited 
+		 * quantum and priority are set explicitly rather than inherited 
 		 * from the parent */
+            
+        /* CHANGE START */
 		rmp->priority   = rmp->max_priority;
+        printf("@@@@@@@@@@@@@@@@@@@@@ MAX rmp->max_priority: %d, MIN_USER_Q: %d, USER_Q: %d\n",rmp->max_priority, MIN_USER_Q,USER_Q);
+        /* CHANGE END */
+       
+            
 		rmp->time_slice = (unsigned) m_ptr->SCHEDULING_QUANTUM;
+     
+        /*printf("In do_start_scheduling. Total number of tickets: %d\n", nTickets);*/
 		break;
 		
 	case SCHEDULING_INHERIT:
@@ -122,9 +181,12 @@ PUBLIC int do_start_scheduling(message *m_ptr)
 		if ((rv = sched_isokendpt(m_ptr->SCHEDULING_PARENT,
 				&parent_nr_n)) != OK)
 			return rv;
-
-		rmp->priority = schedproc[parent_nr_n].priority;
+		/*rmp->priority = schedproc[parent_nr_n].priority;*/
+		rmp->priority = MIN_USER_Q;
 		rmp->time_slice = schedproc[parent_nr_n].time_slice;
+    rmp->tickets = 20; /*basic lottery scheduling*/
+    nTickets += rmp->tickets;
+        /*printf("In do_start_scheduling. Total number of tickets: %d\n", nTickets);*/
 		break;
 		
 	default: 
@@ -142,6 +204,7 @@ PUBLIC int do_start_scheduling(message *m_ptr)
 	rmp->flags = IN_USE;
 
 	/* Schedule the process, giving it some quantum */
+    /*printf("Scheduling new process in do_start\n");*/
 	if ((rv = schedule_process(rmp)) != OK) {
 		printf("Sched: Error while scheduling process, kernel replied %d\n",
 			rv);
@@ -168,7 +231,7 @@ PUBLIC int do_nice(message *m_ptr)
 	struct schedproc *rmp;
 	int rv;
 	int proc_nr_n;
-	unsigned new_q, old_q, old_max_q;
+	unsigned new_q, old_q, old_max_q, old_tickets;
 
 	/* check who can send you requests */
 	if (!accept_message(m_ptr))
@@ -187,17 +250,20 @@ PUBLIC int do_nice(message *m_ptr)
 	}
 
 	/* Store old values, in case we need to roll back the changes */
-	old_q     = rmp->priority;
-	old_max_q = rmp->max_priority;
-
+	old_q       = rmp->priority;
+	old_max_q   = rmp->max_priority;
+    old_tickets = rmp->tickets;
 	/* Update the proc entry and reschedule the process */
 	rmp->max_priority = rmp->priority = new_q;
-
+    
+    
+    
 	if ((rv = schedule_process(rmp)) != OK) {
 		/* Something went wrong when rescheduling the process, roll
 		 * back the changes to proc struct */
 		rmp->priority     = old_q;
 		rmp->max_priority = old_max_q;
+        rmp->tickets      = old_tickets;
 	}
 
 	return rv;
@@ -245,15 +311,25 @@ PRIVATE void balance_queues(struct timer *tp)
 	struct schedproc *rmp;
 	int proc_nr;
 	int rv;
-
+  play_lottery();
 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
 		if (rmp->flags & IN_USE) {
 			if (rmp->priority > rmp->max_priority) {
 				rmp->priority -= 1; /* increase priority */
-				schedule_process(rmp);
+                /* rmp->tickets += 1; dynamic tickets */
+				/*schedule_process(rmp);*/
 			}
 		}
 	}
-
+    
 	set_timer(&sched_timer, balance_timeout, balance_queues, 0);
+}
+
+ /*===========================================================================*
+ *				dynamic_tickets			     *
+ *===========================================================================*/
+PRIVATE void dynamic_tickets(void)
+{
+/*professor: called by do_nice*/
+ 
 }
